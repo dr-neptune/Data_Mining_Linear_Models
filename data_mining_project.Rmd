@@ -1,27 +1,35 @@
 ---
 title: "Data Mining Regressions"
 author: "Michael Rose"
-date: "4/24/2019"
-output: pdf_document
+output:
+  html_document:
+    code_folding: hide
+    df_print: paged
+    theme: paper
+    hightlight: zenburn
+    mathjax: default
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align = "center", fig.width = 9)
 
 data_location <- "~/Desktop/courses/Data_Mining/Admission_Predict.csv"
 
 # programming
 library(rstanarm)
-options(mc.cores = parallel::detectCores())
+core_num <- parallel::detectCores()
+options(mc.cores = core_num)
 library(tidyverse)
 library(magrittr)
 library(furrr)
 plan(multiprocess)
 
+
 # graphing
 library(corrplot)
 library(cowplot)
 library(GGally)
+library(qwraps2)
 
 # color scheme
 library(wesanderson)
@@ -29,9 +37,11 @@ color_scheme <- wes_palette("Royal1")
 color_scheme <- c(color_scheme[1], color_scheme[2], color_scheme[3], color_scheme[4])
 ```
 
-# Abstract
+# {.tabset}
 
-# Data 
+## Abstract
+
+## Data 
 
 ### Overview of Data
 
@@ -52,11 +62,15 @@ The source of this data is the following:
 
 -----
 
+<center>
+
 `A Comparison of Regression Models for Prediction of Graduate Admissions`
 
 `Mohan S Acharya, Asfia Armaan, Aneeta S Antony`
 
 `IEEE International Conference on Computational Intelligence in Data Science 2019`
+
+</center>
 
 -----
 
@@ -76,21 +90,18 @@ admissions %>%
          "Rating" = "University Rating",
          "GPA" = "CGPA",
          "Chance" = "Chance of Admit") -> admissions
+
+admissions
 ```
 
 
-# Visualizations 
-
+## Visualizations 
 
 ### Individual Features
 
 ```{r}
-admissions
-
 # grab colnames
 admissions %>% select(-c("Student", "Research")) %>% colnames() -> adm_colnames
-
-adm_colnames
 
 # make plotting function
 plot_density <- function(variable){
@@ -113,7 +124,7 @@ density_plots %>%
     plot_grid(plotlist = ., ncol = 2)
 ```
 
-# Combination of Predictors
+### Combination of Predictors
 
 ```{r}
 # make plotting function
@@ -160,13 +171,437 @@ admissions %>%
 
 We see that most of the predictor variables have relatively high correlation. 
 
-# Statistics
+## Summary Statistics
 
+|Statistic |GRE	|TOEFL	|Rating|	SOP|	LOR|	GPA|	Research|	Chance|
+|:--|:--|:--|:--|:--|:--|:--|:--|:--|
+|Min|290.0|92.0|1.000	|1.0	|1.000|6.800|1:219|0.3400|
+|1st Qu.|308.0|103.0|2.000|2.5|3.000|8.170|0:181|0.6400|
+|Median|317.0|107.0|3.000|3.5|3.500|8.610|NA|0.7300|
+|Mean|316.8|107.4|3.087|3.4|3.453|8.599|NA|0.7244|
+|3rd Qu.|325.0|112.0|4.000|4.0|4.000|9.062|NA|0.8300|
+|Max|340.0|120.0|5.000|5.0|5.000|9.920|NA|0.9700|
+
+## Bayesian Methodology
+
+__Bayesian statistical modeling__ is a method of doing statistical analysis in which we derive a posterior distribution of a distribution.
+
+Bayesian analysis consists of four steps: 
+
+1. Specify a joint distribution for the outcome and all the unknowns. This takes the form of a marginal distribution for each unknown multiplied by the likelihood for the outcome conditional on the unknowns. 
+
+2. Sample the posterior distribution using Markov Chain Monte Carlo techniques.
+
+3. Evaluate the model fit on the data
+
+4. Sample from the posterior predictive distribution of the outcome to get an idea of the values of the predictors. This allows us to understand how manipulating a predictor affects the outcome.
+
+![](bayesian_posterior.png)
+
+## Linear Regression
+
+### Likelihood
+
+Let's look at the GRE score. We will use a conditionally normal probability density function to model the GRE score: 
+
+<center>
+
+$\frac{1}{\sigma \sqrt{2 \pi}} e^{- \frac{1}{2} (\frac{y - \mu}{\sigma})^2}$
+
+</center>
+
+where $\mu = \alpha + x^T \beta$ is a linear predictor and $\sigma$ is the standard deviation of the error in predicting the outcome $y$.  
+
+More generally, we can use a linear predictor $\eta = \alpha + x^T \beta$ which can be related to the mean of the outcome via a link function $g$ which will serve as a map between the range of values on which the outcome is defined and the space upon which the linear predictor is defined. We will use link functions further in the analysis, but for now we can assume that $g$ is simply the identity function. 
+
+### Priors
+
+In order to fit a full Bayesian model, we must specify prior distributions $f(\alpha)$ and $f(\beta)$ for the intercept and vector of regression coefficients. For this first model, I will use weakly informative priors:
+
+<center>
+
+$\alpha \sim \mathrm{Normal}(0, 10)$
+
+$\beta \sim \mathrm{Normal}(0, 5)$
+
+</center>
+
+
+### Posterior 
+
+With independent prior distributions, our joint posterior for $\alpha$ and $\beta$ is proportional to the product of the priors and the $n$ likelihood contributions:
+
+<center>
+
+$f(\beta | y, X) \propto f(\alpha) \cdot \prod\limits_{k = 1}^K f(\beta_k) \cdot \prod\limits_{i=1}^N f(y_i | \eta_i)$
+
+</center>
+
+where $X$ is the matrix of predictors and $\eta$ is the linear predictor.
+
+### Fitting the Model
+
+First I will fit a simple model which can be visualized. This model will simply predict a students GRE score based on their GPA. 
+
+```{r}
+lin_mod_1 <- stan_glm(data = admissions, formula = GRE ~ GPA,
+                    family = gaussian(link = "identity"),
+                    chains = 4, cores = core_num, seed = 8888)
+
+lin_mod_1
+```
+
+We will also want to see the uncertainty in the model. When we fit a Bayesian model, we are fitting many models and using the most likely estimates as our final model. One way we can show uncertainty is to plot the estimated regression line at each draw from the posterior distribution. 
+
+```{r}
+model_draws <- as_tibble(lin_mod_1) %>% set_names(c("a", "b"))
+```
+
+
+### Visualize Model
+
+```{r}
+p1 <- ggplot(admissions, aes(y = GRE, x = GPA)) + 
+  geom_point(size = 1, color = color_scheme[1]) + 
+  geom_abline(intercept = coef(lin_mod_1)[1], 
+              slope = coef(lin_mod_1)[2], 
+              color = color_scheme[4], size = 1) + 
+  ggtitle("Linear Model")
+
+p2 <- p1 + 
+  geom_abline(data = model_draws, aes(intercept = a, slope = b), 
+              color = color_scheme[3], size = 0.2, alpha = 0.2) + 
+  geom_abline(intercept = coef(lin_mod_1)[1], 
+              slope = coef(lin_mod_1)[2], 
+              color = color_scheme[4], size = 1) + 
+  ggtitle("Linear Model + Uncertainty")
+
+plot_grid(plotlist = list(p1, p2))
+```
+
+### Multiple Regression
+
+```{r}
+lin_mod_2 <- stan_glm(data = admissions, formula = GRE ~ GPA + TOEFL + SOP + LOR,
+                    family = gaussian(link = "identity"),
+                    chains = 4, cores = core_num, seed = 8888)
+
+lin_mod_2
+```
+
+### Model Comparison
+
+Now that we have two models, we can demonstrate how to compare our models. For this, we will use Leave One Out cross validation. 
+
+```{r}
+# CV model 1
+loo_cv_1 <- loo(lin_mod_1)
+
+# CV model 2
+loo_cv_2 <- loo(lin_mod_2)
+
+# compare our models
+(comparison <- compare_models(loo_cv_1, loo_cv_2))
+```
+
+In this case, our second model (the multiple regression) is highly preferred. 
+
+`elpd_diff` is the Expected Log Predicted Density. It is given by the expression 
+
+<center>
+
+$\mathrm{elpd} = \sum\limits_{i = 1}^n \int p_t(\tilde{y}) \log p(\tilde{y_i} | y) d \tilde{y_i}$
+
+</center>
+
+where $p_t(\tilde{y_i})$ is the distribution of the true data generating process. In this case, since the true data generating process is unknown, we approximate it via leave one out cross validation: 
+
+<center>
+
+$\mathrm{elpd}_{loo} = \sum\limits_{i = 1}^n \log p(y_i | y_{-i})$
+
+where $p(y_i | y_{-i}) = \int p(y_i |theta) p(\theta | y_{-i}) d\theta$
+</center>
+
+Our `elpd_diff` value is much higher than our standard error. Since the difference is so large, the second model fits the data much better. 
+
+### Graphical Posterior Predictive Checks
+
+`rstanarm` comes with a handy tool for checking plots and diagnostic criteria:
+
+```{r}
+# launch_shinystan(lin_mod_2)
+```
+
+We can also generate some of the information in the shinystan app in our notebook.
+
+The `pp_check` function generates a variety of plots comparing the observed outcome $y$ to the simulated datasets $y^{rep}$ from the posterior predictive distribution using the same observations of the predictors $X$ as were used to fit the model. 
+
+```{r}
+p1 <- pp_check(lin_mod_2, nreps = 5) + 
+  ggtitle("Simulated Posteriors of GRE") +  
+  scale_color_manual(values = c(color_scheme[1], color_scheme[2])) + 
+  scale_fill_discrete(labels = c("y", "y rep"))
+
+p2 <- pp_check(lin_mod_2, plotfun = "stat", stat = "mean", nreps = 5) + 
+  ggtitle("Mean GRE") + 
+  scale_fill_manual(values = color_scheme) + 
+  scale_color_manual(values = "black") + 
+  theme(legend.position = "none")
+
+p3 <- pp_check(lin_mod_2, plotfun = "stat_2d", stat = c("mean", "sd")) + scale_fill_manual(values = c(color_scheme[1], color_scheme[3]))
+
+
+plot_grid(plotlist = list(p1, p2))
+```
+
+Since the normal distribution is closed under convolution, we get back another normal distribution as our posterior. We can look at both the $\mu$ and $\sigma$ parameters: 
+
+```{r}
+p3
+``` 
+
+### Generating Predictions 
+
+Now that we have a predictive distribution, we can use it to generate some new data predictions. To do this, I will generate some data and then predict the GRE scores based on this data. 
+
+```{r}
+# generate data
+test_data <- tibble(
+  "GPA" = seq(from = 5.5, to = 10, by = 0.5),
+  "TOEFL" = seq(from = 75, to = 120, by = 5), 
+  "SOP" = seq(from = 0.5, to = 5, by = 0.5), 
+  "LOR" = seq(from = 0.5, to = 5, by = 0.5)
+)
+
+# generate predictions 
+test_preds <- posterior_predict(lin_mod_2, newdata = test_data)
+
+# grab 100 predictions
+test_preds %>% as_tibble() %>% slice(1:100) -> out_preds
+
+# change column names to Student_#
+out_preds %<>% set_colnames(paste("Student_", colnames(.), sep = ""))
+
+# place predictions in a nested dataframe
+out_preds %>% gather() %>% nest(value) -> out_preds
+
+out_preds %<>% rename("Student" = key)
+
+# add predictions to the dataframe
+test_data %<>% add_column("Predictions" = out_preds)
+
+test_data
+```
+
+Now we have a table with both our simulated predictors (GPA, TOEFL, SOP, LOR), but also a nested table of our predictions: 
+
+```{r}
+test_data$Predictions
+```
+
+In our predictions, our students are broken down into 10 groups in order of increasing scores for each of the predictors. 
+
+
+```{r, fig.height = 14}
+# create group plotter
+group_plotter <- function(data, group) {
+  # get student number mod 4 for colors
+  st_num <- group %>% str_extract("[0-9]+") %>% as.numeric()
+  st_num_mod <- st_num %% 4 + 1
   
+  # plot
+  data %>% 
+    filter(.[1] == !!group) %>% 
+    unnest(data) %>% 
+    ggplot(aes(x = value)) + 
+    geom_density(fill = color_scheme[st_num_mod]) + 
+    ggtitle(label = paste("Student Group", st_num)) + 
+    xlim(c(225, 375))
+}
 
-# Algorithms
+# grab student names
+students <- test_data$Predictions$Student
 
-# Exploration
+# create plots
+future_map(students, ~group_plotter(test_data$Predictions, .x)) %>% 
+  plot_grid(plotlist = ., ncol = 1)
+```
 
-# Wrapup
 
+
+## Ordinal Regression
+
+Ordinal regression is a type of regression analysis that is used to predict an ordinal variable. An ordinal variable is one in which its value exists on an arbitrary scale where only the relative order of the values is significant. In machine learning this is often considered ranking learning. We can think of ordinal regression as a kind of in between technique between regression and classification. 
+
+For this use case, we will be predicting the University Rating, since it falls in the interval $y \in [1, 5]$.
+
+### Likelihood
+
+Ordinal outcomes fall into one of $J$ categories. In our case, $J = 5$. We can imagine how this model works by introducing a latent variable, $y^*$ that is related to the observed outcomes via an observation mechanism: 
+
+<center>
+
+$y = \begin{cases} 1 & y^* <  \xi_1 \\ 2 & \xi_1 \leq y^* \leq \xi_2 \\ \vdots \\ J & \xi_{j-1} \leq y^* \end{cases}$
+
+</center>
+
+where $\xi$ is a vector of cutpoints of length $J - 1$. 
+
+Then we can model $y^*$ as a linear function of $K$ predictors
+
+<center>
+
+$y^* = \mu + \epsilon = x^T \beta + \epsilon$
+
+</center>
+
+where $\epsilon$ has mean zero and unit scale but can be specified as being drawn from one of several distributions. There is also no intercept in this model, since the data cannot distinguish an intercept from the cutpoints. 
+
+From these assumptions we can derive the conditional distribution as 
+
+<center>
+
+$\begin{split} P(y = k | x) &= P(\xi_{k-1} < y^* \leq \xi_k | x) \\ &= P(\xi_{k-1} < w \cdot x + \epsilon \leq \xi_k) \\ &= \Phi(\xi_k - w \cdot x) - \Phi(\xi_{k-1} - w \cdot x) \end{split}$
+
+</center>
+
+where $\Phi$ is the cumulative distribution function of the standard normal distribution. 
+
+### Priors
+
+The main difference between an ordinal outcome and a linear outcome is that the scale of $y^*$ is not identified by the data. Therefore, when we consider $\epsilon$, we specify $\sigma_\epsilon = 1$. This in turn implies that $\sigma_{y^*} = \frac{1}{\sqrt{1 - R^2}}$. 
+
+Another difference is that we don't have a global intercept ($\alpha$ in our linear regression), but instead a vector of $J-1$ cutpoints. For these cutpoints we will specify a Dirichlet prior on $P(y = j | \bar{x})$, which can be stated as the prior probability of the outcome falling in each of the $J$ categories given that the predictors are at their sample means. The Dirichlet prior is for a simplex random variable, with non negative elements that sum to 1. It can be written as
+
+<center>
+$f(\pi | \alpha) \propto \prod\limits_{j=1}^J \pi_j^{\alpha_j - 1}$
+</center>
+
+where $\pi$ is a simplex vector such that $\pi_j = P(y = j | \bar{x})$, and $\alpha$ is a vector of concentration hyperparameters that we can interpret as prior counts. For example, if $\alpha_j = 1$ for all $j \in J$, then the Dirichlet prior simply says we have a jointly uniform distribution over the space of these simplexes. This is equivalent to saying that one observation falls into each of the $J$ ordinal categories when the predictors are at their sample means. 
+
+### Posterior 
+
+We can then get the $j$th cutpoint by
+
+<center>
+$\xi_j = F_{y^*}^{-1}(\sum\limits_{i = 1}^j \pi_i)$
+</center>
+
+where $F_{y^*}^{-1}$ is an inverse CDF function, depending on the assumed distribution of $y^*$ (which we defined earlier as normally distributed, but could just as easily be logistic or multinomial). Our scale parameter
+
+Our scale paremeter for $\xi_j$ is also $\sigma_{y^*} = \frac{1}{\sqrt{1 - R^2}}$.
+
+### Fitting the Model
+
+#### Preprocessing
+
+In order to get good results with ordinal regression, it helps to scale the values. 
+
+<center>
+$y = \frac{x - \mathrm{mean}(x)}{\mathrm{sd}(x)}$
+</center>
+
+
+```{r}
+# coerce Rating to factor and scale variables
+admissions_ord <- admissions %>% 
+  mutate(Rating = Rating %>% as_factor(),
+         GRE = GRE %>% scale(), 
+         TOEFL = TOEFL %>% scale(), 
+         SOP = SOP %>% scale(), 
+         LOR = LOR %>% scale(),
+         GPA = GPA %>% scale(),
+         Chance = Chance %>% scale())
+
+# look at scaled data 
+admissions_ord %>% head()
+```
+
+#### Fit the first model
+
+`Rating ~ SOP + LOR + Research`
+
+```{r}
+# fit model
+ord_mod_1 <- stan_polr(Rating ~ SOP + LOR + Research, data = admissions_ord, 
+                       prior = R2(0.005), prior_counts = dirichlet(80),
+                       chains = 12, cores = core_num, seed = 8888)
+
+ord_mod_1
+```
+
+As an interpretation, suppose we got the median results for SOP (0.09), LOR(0.05), and Research(1). 
+Then 
+
+SOP + LOR + Research = 
+0.6 * SOP + 0.3 * LOR + 0.3 * Research =
+0.6 * 0.09 + 0.3 * 0.05 + 0.3 * 1 = 
+`r 0.6 * 0.09 + 0.3 * 0.05 + 0.3 * 1`
+
+which places us in the 3rd cut, for a university ranking of 3.
+
+#### Fit the second model
+
+In order to compare this with a different model, I will fit a second model. This second model will predict the University ranking from all the available numeric predictors. 
+
+`Rating ~ GRE + TOEFL + SOP + LOR + GPA + Chance + Research`
+
+```{r}
+# fit model 2
+ord_mod_2 <- stan_polr(Rating ~ GRE + TOEFL + SOP + LOR + GPA + Chance + Research, data = admissions_ord, 
+                       prior = R2(0.005), prior_counts = dirichlet(80),
+                       chains = 12, cores = core_num, seed = 8888)
+
+ord_mod_2
+```
+
+```{r}
+p1 <- plot(ord_mod_1)  + 
+  ggtitle("Ordinal Model 1")
+
+p2 <- plot(ord_mod_2) + 
+  ggtitle("Ordinal Model 2")
+
+plot_grid(plotlist = list(p1, p2), ncol = 2)
+```
+
+### Model Comparison
+
+```{r}
+# leave one out CV
+loo_cv_1 <- loo(ord_mod_1)
+loo_cv_2 <- loo(ord_mod_2)
+
+# compare models
+(comparison <- compare_models(loo_cv_1, loo_cv_2))
+```
+
+In this case, our first model is preferred strongly over our second model.
+
+```{r}
+p1 <- pp_check(ord_mod_1, nreps = 50) + 
+  ggtitle("Ordinal Model 1") +  
+  scale_color_manual(values = c(color_scheme[4], color_scheme[1])) + 
+  scale_fill_discrete(labels = c("y", "y rep")) + 
+  theme(legend.position = "null")
+
+p2 <- pp_check(ord_mod_2, nreps = 50) + 
+  ggtitle("Ordinal Model 2") +  
+  scale_color_manual(values = c(color_scheme[4], color_scheme[1])) + 
+  scale_fill_discrete(labels = c("y", "y rep")) + 
+  theme(legend.position = "top")
+
+plot_grid(plotlist = list(p1, p2))
+```
+
+
+## Wrapup
+
+Read More: 
+https://www.kaggle.com/mohansacharya/graduate-admissions
+http://mc-stan.org/rstanarm/index.html
+http://mc-stan.org/rstanarm/articles/continuous.html
+https://en.wikipedia.org/wiki/Ordinal_regression
+http://mc-stan.org/rstanarm/articles/polr.html
+http://mc-stan.org/rstanarm/articles/betareg.html
