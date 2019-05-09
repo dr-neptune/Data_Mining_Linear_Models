@@ -1,0 +1,269 @@
+### Likelihood
+
+Let's look at the GRE score. We will use a conditionally normal probability density function to model the GRE score: 
+
+<center>
+
+$\frac{1}{\sigma \sqrt{2 \pi}} e^{- \frac{1}{2} (\frac{y - \mu}{\sigma})^2}$
+
+</center>
+
+where $\mu = \alpha + x^T \beta$ is a linear predictor and $\sigma$ is the standard deviation of the error in predicting the outcome $y$.  
+
+More generally, we can use a linear predictor $\eta = \alpha + x^T \beta$ which can be related to the mean of the outcome via a link function $g$ which will serve as a map between the range of values on which the outcome is defined and the space upon which the linear predictor is defined. We will use link functions further in the analysis, but for now we can assume that $g$ is simply the identity function. 
+
+### Priors
+
+In order to fit a full Bayesian model, we must specify prior distributions $f(\alpha)$ and $f(\beta)$ for the intercept and vector of regression coefficients. For this first model, I will use weakly informative priors:
+
+<center>
+
+$\alpha \sim \mathrm{Normal}(0, 10)$
+
+$\beta \sim \mathrm{Normal}(0, 5)$
+
+</center>
+
+
+### Posterior 
+
+With independent prior distributions, our joint posterior for $\alpha$ and $\beta$ is proportional to the product of the priors and the $n$ likelihood contributions:
+
+<center>
+
+$f(\beta | y, X) \propto f(\alpha) \cdot \prod\limits_{k = 1}^K f(\beta_k) \cdot \prod\limits_{i=1}^N f(y_i | \eta_i)$
+
+</center>
+
+where $X$ is the matrix of predictors and $\eta$ is the linear predictor.
+
+### Fitting the Model
+
+First I will fit a simple model which can be visualized. This model will simply predict a students GRE score based on their GPA. 
+
+```{r}
+lin_mod_1 <- stan_glm(data = admissions, formula = GRE ~ GPA,
+                    family = gaussian(link = "identity"),
+                    chains = 4, cores = core_num, seed = 8888)
+
+lin_mod_1
+```
+
+We will also want to see the uncertainty in the model. When we fit a Bayesian model, we are fitting many models and using the most likely estimates as our final model. One way we can show uncertainty is to plot the estimated regression line at each draw from the posterior distribution. 
+
+```{r}
+model_draws <- as_tibble(lin_mod_1) %>% set_names(c("a", "b"))
+```
+
+
+### Visualize Model
+
+```{r}
+p1 <- ggplot(admissions, aes(y = GRE, x = GPA)) + 
+  geom_point(size = 1, color = color_scheme[1]) + 
+  geom_abline(intercept = coef(lin_mod_1)[1], 
+              slope = coef(lin_mod_1)[2], 
+              color = color_scheme[4], size = 1) + 
+  ggtitle("Linear Model")
+
+p2 <- p1 + 
+  geom_abline(data = model_draws, aes(intercept = a, slope = b), 
+              color = color_scheme[5], size = 0.2, alpha = 0.2) + 
+  geom_abline(intercept = coef(lin_mod_1)[1], 
+              slope = coef(lin_mod_1)[2], 
+              color = color_scheme[4], size = 1) + 
+  ggtitle("Linear Model + Uncertainty")
+
+plot_grid(plotlist = list(p1, p2))
+```
+
+### Multiple Regression
+
+```{r}
+lin_mod_2 <- stan_glm(data = admissions, formula = GRE ~ GPA + TOEFL + SOP + LOR,
+                    family = gaussian(link = "identity"),
+                    chains = 4, cores = core_num, seed = 8888)
+
+lin_mod_2
+```
+
+### Variable Selection
+
+In the two models above I added features arbitrarily. In order to do feature selection with Bayesian models, I will be using the `projpred` package which implements the projective variable selection for generalized linear models. 
+
+```{r}
+cvs <- cv_varsel(lin_mod_2, method = 'forward', cv_method = 'kfold', K = 10, seed = 8888, verbose = F)
+
+paste0("Suggested Number of Variables: ", suggest_size(cvs))
+
+varsel_plot(cvs, stats = c('elpd', 'rmse'))
+```
+
+Our variable selection process suggests a model consisting of 2 variables: `r cvs$vind[1:2]`. Now we can fit the optimal model.
+
+```{r}
+lin_mod_3 <- stan_glm(data = admissions, formula = GRE ~ GPA + TOEFL,
+                    family = gaussian(link = "identity"),
+                    chains = 4, cores = core_num, seed = 8888)
+
+lin_mod_3
+```
+
+
+
+
+### Model Comparison
+
+Now that we have two models, we can demonstrate how to compare our models. For this, we will use Leave One Out cross validation. 
+
+```{r}
+# CV model 1
+loo_cv_1 <- loo(lin_mod_1, cores = core_num)
+
+# CV model 2
+loo_cv_2 <- loo(lin_mod_2, cores = core_num)
+
+# CV model 3
+loo_cv_3 <- loo(lin_mod_3, cores = core_num)
+
+# compare our models
+comparison <- compare_models(loo_cv_1, loo_cv_2, loo_cv_3)
+
+comparison
+```
+
+In this case, our third model is preferred, but only slightly over the second model. Thus, our best model is 
+
+<center>
+
+-----
+
+`GRE ~ GPA + TOEFL`
+
+-----
+
+</center>
+
+`elpd_diff` is the Expected Log Predicted Density. It is given by the expression 
+
+<center>
+
+$\mathrm{elpd} = \sum\limits_{i = 1}^n \int p_t(\tilde{y}) \log p(\tilde{y_i} | y) d \tilde{y_i}$
+
+</center>
+
+where $p_t(\tilde{y_i})$ is the distribution of the true data generating process. In this case, since the true data generating process is unknown, we approximate it via leave one out cross validation: 
+
+<center>
+
+$\mathrm{elpd}_{loo} = \sum\limits_{i = 1}^n \log p(y_i | y_{-i})$
+
+where $p(y_i | y_{-i}) = \int p(y_i |theta) p(\theta | y_{-i}) d\theta$
+</center>
+
+Our `elpd_diff` value is much higher than our standard error. Since the difference is so large, the second model fits the data much better. 
+
+### Graphical Posterior Predictive Checks
+
+`rstanarm` comes with a handy tool for checking plots and diagnostic criteria:
+
+```{r}
+# launch_shinystan(lin_mod_2)
+```
+
+We can also generate some of the information in the shinystan app in our notebook.
+
+The `pp_check` function generates a variety of plots comparing the observed outcome $y$ to the simulated datasets $y^{rep}$ from the posterior predictive distribution using the same observations of the predictors $X$ as were used to fit the model. 
+
+```{r}
+p1 <- pp_check(lin_mod_1, nreps = 5) + 
+  ggtitle("Simulated Posteriors of GRE") +  
+  scale_color_manual(values = c(color_scheme[1], color_scheme[2])) + 
+  scale_fill_discrete(labels = c("y", "y rep")) + 
+  ggtitle("Model 1", subtitle = "GRE ~ GPA")
+
+
+p2 <- pp_check(lin_mod_2, nreps = 5) + 
+  ggtitle("Simulated Posteriors of GRE") +  
+  scale_color_manual(values = c(color_scheme[1], color_scheme[2])) + 
+  scale_fill_discrete(labels = c("y", "y rep")) + 
+  ggtitle("Model 2", subtitle = "GRE ~ GPA + TOEFL + SOP + LOR")
+
+p3 <- pp_check(lin_mod_3, nreps = 5) + 
+  ggtitle("Simulated Posteriors of GRE") +  
+  scale_color_manual(values = c(color_scheme[1], color_scheme[2])) + 
+  scale_fill_discrete(labels = c("y", "y rep")) + 
+  ggtitle("Model 3", subtitle = "GRE ~ GPA + TOEFL")
+
+p4 <- pp_check(lin_mod_3, plotfun = "stat_2d", stat = c("mean", "sd")) + scale_fill_manual(values = c(color_scheme[1], color_scheme[5])) +
+  xlim(c(315, 318)) +
+  ggtitle("Mean & Std Dev", subtitle = "GRE ~ GPA + TOEFL")
+
+plot_grid(plotlist = list(p1, p2, p3, p4), ncol = 2)
+```
+
+### Generating Predictions 
+
+Now that we have a predictive distribution, we can use it to generate some new data predictions. To do this, I will generate some data and then predict the GRE scores based on this data. We will be using the third linear model (`GRE ~ GPA + TOEFL`) because it performed best.
+
+```{r}
+# generate data
+test_data <- tibble(
+  "GPA" = seq(from = 5.5, to = 10, by = 0.5),
+  "TOEFL" = seq(from = 75, to = 120, by = 5)
+)
+
+# generate predictions 
+test_preds <- posterior_predict(lin_mod_3, newdata = test_data)
+
+# grab 100 predictions
+test_preds %>% as_tibble() %>% slice(1:100) -> out_preds
+
+# change column names to Student_#
+out_preds %<>% set_colnames(paste("Student_", colnames(.), sep = ""))
+
+# place predictions in a nested dataframe
+out_preds %>% gather() %>% nest(value) -> out_preds
+
+out_preds %<>% rename("Student" = key)
+
+# add predictions to the dataframe
+test_data %<>% add_column("Predictions" = out_preds)
+
+test_data
+```
+
+Now we have a table with both our simulated predictors (GPA, TOEFL), but also a nested table of our predictions: 
+
+```{r}
+test_data$Predictions
+```
+
+In our predictions, our students are broken down into 10 groups in order of increasing scores for each of the predictors. 
+
+
+```{r, fig.height = 14}
+# create group plotter
+group_plotter <- function(data, group) {
+  # get student number mod 4 for colors
+  st_num <- group %>% str_extract("[0-9]+") %>% as.numeric()
+  st_num_mod <- st_num %% 6 + 1
+  
+  # plot
+  data %>% 
+    filter(.[1] == !!group) %>% 
+    unnest(data) %>% 
+    ggplot(aes(x = value)) + 
+    geom_density(fill = color_scheme[st_num_mod], alpha = 0.25) + 
+    ggtitle(label = paste("Student Group", st_num)) + 
+    xlim(c(225, 375))
+}
+
+# grab student names
+students <- test_data$Predictions$Student
+
+# create plots
+future_map(students, ~group_plotter(test_data$Predictions, .x)) %>% 
+  plot_grid(plotlist = ., ncol = 1)
+```
+

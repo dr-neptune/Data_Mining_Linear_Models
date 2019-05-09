@@ -1,0 +1,187 @@
+Beta Regression is a form of regression that is used when we wish to model some value y where $y \in [0, 1]$, or y is a proportion or rate.
+
+### Likelihood
+
+Beta regression uses the beta distribution as its likelihood function:
+
+<center>
+$f(y_i | a, b) = \frac{y_i^{(a-1)}(1 - y_i)^{(b-1)}}{\beta(a, b)}$
+</center>
+
+where $\beta$ is the beta function: 
+
+<center>
+$\beta(a, b) = \frac{\Gamma(a) \Gamma(b)}{\Gamma(a + b)}$
+</center>
+
+The shape parameters for this distribution are $(a, b)$, and they enter into this model with the following transformations:
+
+<center>
+$a = \mu \cdot \phi$ 
+
+$b = (1 - \mu) \cdot \phi$
+</center>
+
+Then, regarding $\mu$: 
+
+Let $g_1(\cdot)$ be some link function. In the specification of the shape parameters above, $\mu = g_1^{-1}(X\beta)$ where $X$ is an $N \times K$ dimensional matrix of predictors, and $\beta$ is a $K$ dimensional vector of parameters associated with each predictor. In the simplest case, $\phi$ is a scalar parameter. We can also model $\phi$ using a second set of independent variables $Z$. In this case we can let $g_2(\cdot)$ be some link function that is not necessarily identical to $g_1(\cdot)$. Then $\phi = g_2^{-1}(Z\gamma)$, where $\gamma$ is a $J$ dimensional vector of parameters associated with the $N \times J$ dimensional matrix of predictors $Z$.
+
+After substituting the shape parameters in, the likelihood function for the beta regression takes the form:
+
+<center>
+$f(y_i | \mu, \phi) = \frac{ y_i^{(\mu\phi - 1)}(1 - y_i)^{((1 - \mu)\phi - 1)}}{\beta(\mu\phi, (1 - \mu)\phi)}$
+</center>
+
+### Priors 
+
+For a full Bayesian analysis, we need to specify $f(\beta_1)$ and $f(\phi)$ for the vector of independent variable coefficients and phi. These can be set in our stan model with `prior_intercept`, `prior`, and `prior_phi` arguments. 
+
+When we model $\phi$ with a linear predictor a full Bayesian analysis requires also specifying $f(\gamma)$ and $f(\beta_2)$. These can be set in stan with the `prior_intercept_z` and `prior_z` arguments.
+
+Let us suppose that our coefficients are just as likely to be positive as they are to be negative, but are unlikely to be far from 0. These beliefs can be represented with normal distributions:
+
+<center>
+$f(\beta_1) \sim \mathrm{normal}(0, 2.5)$
+
+$f(\phi) \sim \mathrm{normal}(0, 2.5)$
+
+$\phi \sim \mathrm{normal}(0, 10)$
+
+</center>
+
+### Posterior
+
+For a single set of independent variables, we have the following posterior:
+
+<center>
+$f(\beta, \phi | y, X) \propto \prod\limits_{i=1}^N f(y_i | a, b) \times \prod\limits_{k=1}^K f(\beta_k) \times f(\phi)$
+</center>
+
+where the posterior of $\beta$ and $\phi$ is proportional to the product of the likelihood contributions, the $K$ priors on the $\beta_k$ parameters and $\phi$.
+
+With two sets of independent variables, we have the following posterior: 
+
+<center>
+$f(\beta, \gamma | y, X) \propto \prod\limits_{i=1}^N f(y_i | a, b) \times \prod\limits_{k=1}^K f(\beta_k) \times \prod\limits_{j=1}^J f(\gamma_j)$
+</center>
+
+where the posterior of $\beta$ and $\gamma$ is proportional to the product of the likelihood contribution, the $K$ priors on the $\beta_k$ parameters, and the $J$ priors on the $\gamma_j$ parameters.
+
+### Fitting the Model
+
+#### Preprocessing
+
+```{r}
+# coerce Rating to factor and scale variables
+admissions_beta <- admissions %>% 
+  mutate(Rating = Rating %>% as_factor(),
+         GRE = GRE %>% scale(), 
+         TOEFL = TOEFL %>% scale(), 
+         SOP = SOP %>% scale(), 
+         LOR = LOR %>% scale(),
+         GPA = GPA %>% scale())
+
+admissions_beta %>% head(50)
+```
+
+#### Fit the First Model
+
+`Chance ~ GRE + GPA`
+
+```{r}
+beta_mod_1 <- stan_betareg(Chance ~ GRE + GPA, data = admissions_beta, link = "logit",
+                           chains = 12, cores = core_num, seed = 8888, prior_intercept = normal(0, 2.5), prior_phi = normal(0, 2.5), prior = normal(0, 20))
+
+beta_mod_1
+```
+
+As an interpretation of this model, suppose we were to take the first row coefficients from admissions_beta: 
+
+<center>
+
+-----
+
+$\mathrm{GRE} = 1.75 \quad \mathrm{|} \quad \mathrm{GPA} = 1.76$
+
+-----
+
+</center>
+
+Then we need to transform our scale. Given that we have a logit link, we use:
+
+<center>
+$\mathrm{logit}(y_i) = \beta_0 + \sum\limits_{i=1}^p \beta_i$
+</center>
+
+The beta coefficients are the additional increase or decrease in the log odds of our response. Then to interpret them, we need to transform back our response:
+
+<center>
+$y_i = \frac{e^{\beta_0 + \sum_{i=1}^p \beta_i}}{1 + e^{\beta_0 + \sum_{i=1}^p \beta_i}}$
+</center>
+
+Then
+
+<center>
+
+$logit(\mathrm{E}(y)) = 1.03 + 0.2 * GRE + 0.48 * GPA$
+
+$\frac{e^{1.03 + 0.2 * GRE + 0.48 * GPA}}{1 + e^{1.03 + 0.2 * GRE + 0.48 * GPA}}$  
+
+$\frac{e^{1.03 + 0.2 * 1.75 + 0.48 * 1.76}}{1 + e^{1.03 + 0.2 * 1.75 + 0.48 * 1.76}}$
+</center>
+
+which gives us `r zig <- exp(1.03 + 0.2 * 1.75 + 0.48 * 1.76); round(zig / (1 + zig), 3)`, which is very close to our actual value of 92%
+
+#### Fit the Second Model
+
+`Chance ~ GRE + GPA + TOEFL + SOP + LOR`
+
+```{r}
+beta_mod_2 <- stan_betareg(Chance ~ GRE + GPA + TOEFL + SOP + LOR, data = admissions_beta, link = "logit",
+                           chains = 12, cores = core_num, seed = 8888, prior_intercept = normal(0, 2.5), prior_phi = normal(0, 20), prior = normal(0, 0.25))
+
+beta_mod_2
+```
+
+Then, interpreting this new model as we did above -- but with the second row of the admissions_beta data:
+
+<center>
+
+-----
+
+$\mathrm{GRE} = 0.62 \quad \mathrm{|} \quad \mathrm{TOEFL} = -0.06 \quad \mathrm{|} \quad \mathrm{SOP} = 0.59 \quad \mathrm{|} \quad \mathrm{LOR} = 1.16 \quad \mathrm{|} \quad \mathrm{GPA} = 0.45$
+
+-----
+
+which gives us `r zig <- exp(1.0 + 0.1 * 0.62 + 0.1 * -0.06 + 0.0 * 0.59 + 0.1 * 1.16 + 0.4 * 0.45); round(zig / (1 + zig), 2)`, which is somewhat close to our actual value of 76%
+
+</center>
+
+### Model Comparison
+
+```{r}
+loo_cv_1 <- loo(beta_mod_1, cores = core_num)
+loo_cv_2 <- loo(beta_mod_2, cores = core_num)
+
+# compare
+(comparison <- compare_models(loo_cv_1, loo_cv_2))
+```
+
+Our CV indicates that our second model fits best. 
+
+```{r}
+p1 <- pp_check(beta_mod_1, nreps = 50) + 
+  ggtitle("Beta Regression 1") +  
+  scale_color_manual(values = c(color_scheme[4], color_scheme[1])) + 
+  scale_fill_discrete(labels = c("y", "y rep")) + 
+  theme(legend.position = "null")
+
+p2 <- pp_check(beta_mod_2, nreps = 50) + 
+  ggtitle("Beta Regression 2") +  
+  scale_color_manual(values = c(color_scheme[4], color_scheme[1])) + 
+  scale_fill_discrete(labels = c("y", "y rep")) + 
+  theme(legend.position = "top")
+
+plot_grid(plotlist = list(p1, p2))
+```
+

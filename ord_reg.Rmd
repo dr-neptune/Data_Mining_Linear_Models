@@ -1,0 +1,162 @@
+
+Ordinal regression is a type of regression analysis that is used to predict an ordinal variable. An ordinal variable is one in which its value exists on an arbitrary scale where only the relative order of the values is significant. In machine learning this is often considered ranking learning. We can think of ordinal regression as a kind of in between technique between regression and classification. 
+
+For this use case, we will be predicting the University Rating, since it falls in the interval $y \in [1, 5]$.
+
+### Likelihood
+
+Ordinal outcomes fall into one of $J$ categories. In our case, $J = 5$. We can imagine how this model works by introducing a latent variable, $y^*$ that is related to the observed outcomes via an observation mechanism: 
+
+<center>
+
+$y = \begin{cases} 1 & y^* <  \xi_1 \\ 2 & \xi_1 \leq y^* \leq \xi_2 \\ \vdots \\ J & \xi_{j-1} \leq y^* \end{cases}$
+
+</center>
+
+where $\xi$ is a vector of cutpoints of length $J - 1$. 
+
+Then we can model $y^*$ as a linear function of $K$ predictors
+
+<center>
+
+$y^* = \mu + \epsilon = x^T \beta + \epsilon$
+
+</center>
+
+where $\epsilon$ has mean zero and unit scale but can be specified as being drawn from one of several distributions. There is also no intercept in this model, since the data cannot distinguish an intercept from the cutpoints. 
+
+From these assumptions we can derive the conditional distribution as 
+
+<center>
+
+$\begin{split} P(y = k | x) &= P(\xi_{k-1} < y^* \leq \xi_k | x) \\ &= P(\xi_{k-1} < w \cdot x + \epsilon \leq \xi_k) \\ &= \Phi(\xi_k - w \cdot x) - \Phi(\xi_{k-1} - w \cdot x) \end{split}$
+
+</center>
+
+where $\Phi$ is the cumulative distribution function of the standard normal distribution. 
+
+### Priors
+
+The main difference between an ordinal outcome and a linear outcome is that the scale of $y^*$ is not identified by the data. Therefore, when we consider $\epsilon$, we specify $\sigma_\epsilon = 1$. This in turn implies that $\sigma_{y^*} = \frac{1}{\sqrt{1 - R^2}}$. 
+
+Another difference is that we don't have a global intercept ($\alpha$ in our linear regression), but instead a vector of $J-1$ cutpoints. For these cutpoints we will specify a Dirichlet prior on $P(y = j | \bar{x})$, which can be stated as the prior probability of the outcome falling in each of the $J$ categories given that the predictors are at their sample means. The Dirichlet prior is for a simplex random variable, with non negative elements that sum to 1. It can be written as
+
+<center>
+$f(\pi | \alpha) \propto \prod\limits_{j=1}^J \pi_j^{\alpha_j - 1}$
+</center>
+
+where $\pi$ is a simplex vector such that $\pi_j = P(y = j | \bar{x})$, and $\alpha$ is a vector of concentration hyperparameters that we can interpret as prior counts. For example, if $\alpha_j = 1$ for all $j \in J$, then the Dirichlet prior simply says we have a jointly uniform distribution over the space of these simplexes. This is equivalent to saying that one observation falls into each of the $J$ ordinal categories when the predictors are at their sample means. 
+
+### Posterior 
+
+We can then get the $j$th cutpoint by
+
+<center>
+$\xi_j = F_{y^*}^{-1}(\sum\limits_{i = 1}^j \pi_i)$
+</center>
+
+where $F_{y^*}^{-1}$ is an inverse CDF function, depending on the assumed distribution of $y^*$ (which we defined earlier as normally distributed, but could just as easily be logistic or multinomial). Our scale parameter
+
+Our scale paremeter for $\xi_j$ is also $\sigma_{y^*} = \frac{1}{\sqrt{1 - R^2}}$.
+
+### Fitting the Model
+
+#### Preprocessing
+
+In order to get good results with ordinal regression, it helps to scale the values. 
+
+<center>
+$y = \frac{x - \mathrm{mean}(x)}{\mathrm{sd}(x)}$
+</center>
+
+
+```{r}
+# coerce Rating to factor and scale variables
+admissions_scaled <- admissions %>% 
+  mutate(Rating = Rating %>% as_factor(),
+         GRE = GRE %>% scale(), 
+         TOEFL = TOEFL %>% scale(), 
+         SOP = SOP %>% scale(), 
+         LOR = LOR %>% scale(),
+         GPA = GPA %>% scale(),
+         Chance = Chance %>% scale())
+
+# look at scaled data 
+admissions_scaled %>% head()
+```
+
+#### Fit the first model
+
+`Rating ~ SOP + LOR + Research`
+
+```{r}
+# fit model
+ord_mod_1 <- stan_polr(Rating ~ SOP + LOR + Research, data = admissions_scaled, 
+                       prior = R2(0.005), prior_counts = dirichlet(90),
+                       chains = 12, cores = core_num, seed = 8888)
+
+ord_mod_1
+```
+
+As an interpretation, suppose we got the median results for SOP (0.09), LOR(0.05), and Research(1). 
+Then 
+
+SOP + LOR + Research = 
+0.6 * SOP + 0.3 * LOR + 0.3 * Research =
+0.6 * 0.09 + 0.3 * 0.05 + 0.3 * 1 = 
+`r 0.6 * 0.09 + 0.3 * 0.05 + 0.3 * 1`
+
+which places us in the 3rd cut, for a university ranking of 3.
+
+#### Fit the second model
+
+In order to compare this with a different model, I will fit a second model. This second model will predict the University ranking from all the available numeric predictors. 
+
+`Rating ~ GRE + TOEFL + SOP + LOR + GPA + Chance + Research`
+
+```{r}
+# fit model 2
+ord_mod_2 <- stan_polr(Rating ~ GRE + TOEFL + SOP + LOR + GPA + Chance + Research, data = admissions_scaled, prior = R2(0.005), prior_counts = dirichlet(90), chains = 12, cores = core_num, seed = 8888)
+
+ord_mod_2
+```
+
+
+```{r}
+p1 <- plot(ord_mod_1)  + 
+  ggtitle("Ordinal Model 1")
+
+p2 <- plot(ord_mod_2) + 
+  ggtitle("Ordinal Model 2")
+
+plot_grid(plotlist = list(p1, p2), ncol = 2)
+```
+
+### Model Comparison
+
+```{r}
+# leave one out CV
+loo_cv_1 <- loo(ord_mod_1, cores = core_num)
+loo_cv_2 <- loo(ord_mod_2, cores = core_num)
+
+# compare models
+(comparison <- compare_models(loo_cv_1, loo_cv_2))
+```
+
+In this case, our first model is preferred strongly over our second model.
+
+```{r}
+p1 <- pp_check(ord_mod_1, nreps = 50) + 
+  ggtitle("Ordinal Model 1") +  
+  scale_color_manual(values = c(color_scheme[4], color_scheme[1])) + 
+  scale_fill_discrete(labels = c("y", "y rep")) + 
+  theme(legend.position = "null")
+
+p2 <- pp_check(ord_mod_2, nreps = 50) + 
+  ggtitle("Ordinal Model 2") +  
+  scale_color_manual(values = c(color_scheme[4], color_scheme[1])) + 
+  scale_fill_discrete(labels = c("y", "y rep")) + 
+  theme(legend.position = "top")
+
+plot_grid(plotlist = list(p1, p2))
+```
